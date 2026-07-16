@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genai-api"
+version = "0.1.0"
+description = "API that provides a stable backend for chat management, AI agents, MCP tools, databases and other AI services"
+readme = {file = "README.md", content-type = "text/markdown"}
+requires-python = ">=3.10"
+license = {text = "Apache-2"}
+authors = [
+    {name = "Marta Obregón Ruiz", email = "obregonm@ifca.es"}
+]
+
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+
+[project.urls]
+Homepage = "https://github.com/MartaOB/genai-api"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["genai_api*"]
