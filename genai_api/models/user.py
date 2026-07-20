@@ -6,7 +6,6 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from genai_api.db.base import Base
-from genai_api.models.chat import Chat
 
 
 class User(Base):
