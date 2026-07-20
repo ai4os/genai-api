@@ -58,6 +58,7 @@ target/
 
 # DotEnv configuration
 .env
+.env.test
 
 # Database
 *.db
@@ -142,6 +143,4 @@ GTAGS
 
 # Things specific to this project #
 ###################################
-
-
 
