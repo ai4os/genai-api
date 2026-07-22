@@ -17,5 +17,6 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(default=None)
     username: Mapped[str | None] = mapped_column(default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
+    litellm_api_key: Mapped[str | None] = mapped_column(default=None)
+    
     chats: Mapped[list["Chat"]] = relationship(back_populates="user")

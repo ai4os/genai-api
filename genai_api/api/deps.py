@@ -7,16 +7,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from genai_api.core.security import TokenValidationError, decode_token
 from genai_api.db.session import get_db
 from genai_api.models.user import User
+from genai_api.services.litellm_client import LiteLLMClient
+from genai_api.services.papi_client import PAPIClient
 
 bearer_scheme = HTTPBearer()
 
 
 class CurrentUser:
-    def __init__(self, id: uuid.UUID, email: str | None, username: str | None, roles: list[str]):
+    def __init__(
+        self,
+        id: uuid.UUID,
+        email: str | None,
+        username: str | None,
+        roles: list[str],
+        raw_token: str,
+    ):
         self.id = id
         self.email = email
         self.username = username
         self.roles = roles
+        # Stored only to forward it to downstream services (PAPI)
+        # within the same request. It is not persisted anywhere.
+        self.raw_token = raw_token
 
 
 async def get_current_user(
@@ -37,9 +49,6 @@ async def get_current_user(
     username = payload.get("preferred_username")
     roles = payload.get("realm_access", {}).get("roles", [])
 
-    # Synchronizes the user inside the DB with the information in the token.
-    # This means that 'users' always reflects the latest information Keycloak
-    # has about the user, without requiring an separate registration step.
     user = await db.get(User, user_id)
     if user is None:
         user = User(id=user_id, email=email, username=username)
@@ -50,7 +59,9 @@ async def get_current_user(
         user.username = username
         await db.commit()
 
-    return CurrentUser(id=user_id, email=email, username=username, roles=roles)
+    return CurrentUser(
+        id=user_id, email=email, username=username, roles=roles, raw_token=credentials.credentials
+    )
 
 
 async def get_current_user_id(
@@ -69,3 +80,25 @@ def require_role(role: str):
         return current_user
 
     return checker
+
+
+async def get_user_litellm_client(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> LiteLLMClient:
+    """
+    Devuelve un LiteLLMClient con la API key propia del usuario actual.
+    Returns a LiteLLMClient configured with the current user's API key.
+
+    If the user does not yet have a cached key in `users.litellm_api_key`,
+    it is requested or created via PAPI using the user's own token, then
+    stored so future requests do not need to call PAPI again.
+    """
+    user = await db.get(User, current_user.id)
+
+    if user.litellm_api_key is None:
+        papi_client = PAPIClient(token=current_user.raw_token)
+        user.litellm_api_key = await papi_client.get_or_create_genai_key()
+        await db.commit()
+
+    return LiteLLMClient(api_key=user.litellm_api_key)
