@@ -25,7 +25,8 @@ class Message(Base):
     )
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole, name="message_role"))
     content: Mapped[str] = mapped_column(Text)
-
+    model: Mapped[str | None] = mapped_column(nullable=True)
+    
     # TBD: reserved for tool_calls, attachments, citations.
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 

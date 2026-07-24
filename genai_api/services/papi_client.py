@@ -25,10 +25,21 @@ class PAPIClient:
             raise HTTPException(status_code=response.status_code, detail=response.text)
         return response
 
-    async def get_or_create_genai_key(self) -> str:
+    async def create_genai_key(self) -> str:
         """
-        Returns the user's LiteLLM API key for the GenAi environment.
-        If it does not already exist in PAPI, a new one is created.
+        Creates a fresh LiteLLM API key for the GenAI environment.
+
+        The method first checks whether an API key with the configured
+        ``GENAI_KEY_NAME`` already exists in PAPI. If it does, the key is deleted
+        before creating a new one.
+
+        This guarantees that the key stored in PAPI and the one persisted in the
+        GenAI database are always synchronized. An existing key may indicate that
+        it was created previously but was never stored (or is no longer stored) in
+        the GenAI database.
+
+        Returns:
+            The newly created API key token.
         """
         try: 
             response = await self._request("GET", "/v1/llm/api_keys")
@@ -36,7 +47,12 @@ class PAPIClient:
 
             for key in existing_keys:
                 if key.get("id") == GENAI_KEY_NAME:
-                    return key["token"]
+                    await self._request(
+                        "DELETE",
+                        "/v1/llm/api_keys",
+                        params={"key_name": GENAI_KEY_NAME},
+                    )
+                    break
 
             create_response = await self._request(
                 "POST", "/v1/llm/api_keys", params={"key_name": GENAI_KEY_NAME}

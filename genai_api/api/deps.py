@@ -91,14 +91,14 @@ async def get_user_litellm_client(
     Returns a LiteLLMClient configured with the current user's API key.
 
     If the user does not yet have a cached key in `users.litellm_api_key`,
-    it is requested or created via PAPI using the user's own token, then
-    stored so future requests do not need to call PAPI again.
+    it is created via PAPI using the user's own token, then stored so future 
+    requests do not need to call PAPI again.
     """
     user = await db.get(User, current_user.id)
 
     if user.litellm_api_key is None:
         papi_client = PAPIClient(token=current_user.raw_token)
-        user.litellm_api_key = await papi_client.get_or_create_genai_key()
+        user.litellm_api_key = await papi_client.create_genai_key()
         await db.commit()
 
     return LiteLLMClient(api_key=user.litellm_api_key)
