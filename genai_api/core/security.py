@@ -29,10 +29,10 @@ def decode_token(token: str) -> dict:
             signing_key.key,
             algorithms=["RS256"],
             issuer=settings.keycloak_issuer,
-            options={"verify_aud": False}
+            options={"verify_aud": False},
         )
     except Exception as e:
-        print(f"!!! JWT ERROR: {type(e).__name__} - {str(e)}") 
+        print(f"!!! JWT ERROR: {type(e).__name__} - {str(e)}")
         raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.PyJWTError as exc:
         raise TokenValidationError(str(exc)) from exc

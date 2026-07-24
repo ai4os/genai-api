@@ -79,13 +79,17 @@ async def send_message(
     - `done`  {"message_id", "created_at"} -> the assistant’s message has now been persisted
     - `error` {"detail"} -> failure during transmission; nothing is persisted
     """
-    result = await db.execute(select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id))
+    result = await db.execute(
+        select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
+    )
     chat = result.scalar_one_or_none()
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
 
     # 1. Save user's message before starting to broadcast
-    user_message = Message(chat_id=chat.id, role=MessageRole.user, content=payload.content)
+    user_message = Message(
+        chat_id=chat.id, role=MessageRole.user, content=payload.content
+    )
     db.add(user_message)
     await db.commit()
     await db.refresh(user_message)

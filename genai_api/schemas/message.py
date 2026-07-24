@@ -10,6 +10,7 @@ class MessageCreate(BaseModel):
     content: str
     model: str
 
+
 class MessageOut(BaseModel):
     id: uuid.UUID
     role: MessageRole

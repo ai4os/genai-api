@@ -60,7 +60,11 @@ async def get_current_user(
         await db.commit()
 
     return CurrentUser(
-        id=user_id, email=email, username=username, roles=roles, raw_token=credentials.credentials
+        id=user_id,
+        email=email,
+        username=username,
+        roles=roles,
+        raw_token=credentials.credentials,
     )
 
 
@@ -74,9 +78,13 @@ def require_role(role: str):
     """Dependency factory for protecting endpoints based on Keycloak roles.
     TODO: not used yet. Example of use: Depends(require_role("admin"))."""
 
-    async def checker(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    async def checker(
+        current_user: CurrentUser = Depends(get_current_user),
+    ) -> CurrentUser:
         if role not in current_user.roles:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient role"
+            )
         return current_user
 
     return checker
@@ -91,7 +99,7 @@ async def get_user_litellm_client(
     Returns a LiteLLMClient configured with the current user's API key.
 
     If the user does not yet have a cached key in `users.litellm_api_key`,
-    it is created via PAPI using the user's own token, then stored so future 
+    it is created via PAPI using the user's own token, then stored so future
     requests do not need to call PAPI again.
     """
     user = await db.get(User, current_user.id)

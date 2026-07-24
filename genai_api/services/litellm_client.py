@@ -25,7 +25,8 @@ class LiteLLMClient:
     async def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
         async with httpx.AsyncClient(base_url=settings.litellm_base_url) as client:
             response = await client.request(
-                method, path,
+                method,
+                path,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 **kwargs,
             )
@@ -41,7 +42,8 @@ class LiteLLMClient:
     async def chat_completion(self, model: str, messages: list[dict]) -> dict:
         """(OLD) Non-streaming version (kept in case it's needed somewhere)."""
         response = await self._request(
-            "POST", "/chat/completions",
+            "POST",
+            "/chat/completions",
             json={"model": model, "messages": messages},
         )
         return response.json()
@@ -54,20 +56,25 @@ class LiteLLMClient:
         payload = {"model": model, "messages": messages, "stream": True}
         # timeout=None: a streaming response may take quite a long time to
         # complete; httpx’s default timeout would cut it short prematurely.
-        async with httpx.AsyncClient(base_url=settings.litellm_base_url, timeout=None) as client:
+        async with httpx.AsyncClient(
+            base_url=settings.litellm_base_url, timeout=None
+        ) as client:
             async with client.stream(
-                "POST", "/chat/completions",
+                "POST",
+                "/chat/completions",
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 json=payload,
             ) as response:
                 if not response.is_success:
                     body = await response.aread()
-                    raise HTTPException(status_code=response.status_code, detail=body.decode())
+                    raise HTTPException(
+                        status_code=response.status_code, detail=body.decode()
+                    )
 
                 async for line in response.aiter_lines():
                     if not line or not line.startswith("data:"):
                         continue
-                    data = line[len("data:"):].strip()
+                    data = line[len("data:") :].strip()
                     if data == "[DONE]":
                         break
                     chunk = json.loads(data)

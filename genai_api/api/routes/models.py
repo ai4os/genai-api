@@ -19,5 +19,5 @@ async def list_available_models(
     # TODO: remove manually 'all-proxy-models' from list until we discover why
     # it shows in the list
     models = [m for m in models if m["id"] != "all-proxy-models"]
-    
+
     return [ModelInfo(id=m["id"]) for m in models]

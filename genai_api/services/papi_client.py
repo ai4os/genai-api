@@ -9,6 +9,7 @@ from genai_api.core.config import settings
 
 GENAI_KEY_NAME = "genai_app"
 
+
 class PAPIClient:
     def __init__(self, token: str):
         self._token = token
@@ -41,7 +42,7 @@ class PAPIClient:
         Returns:
             The newly created API key token.
         """
-        try: 
+        try:
             response = await self._request("GET", "/v1/llm/api_keys")
             existing_keys = response.json()
 
@@ -57,7 +58,7 @@ class PAPIClient:
             create_response = await self._request(
                 "POST", "/v1/llm/api_keys", params={"key_name": GENAI_KEY_NAME}
             )
-            print('create response', create_response);
+            print("create response", create_response)
             token = create_response.json()
 
             return token
