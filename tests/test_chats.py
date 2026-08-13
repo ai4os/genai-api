@@ -13,36 +13,57 @@ class FakeLiteLLMClient(LiteLLMClient):
     def __init__(self):
         pass
 
-    async def stream_chat_completion(self, model, messages):
+    async def stream_chat_completion(self, model_id, messages):
         yield "hola"
-        yield " mundo"
+        yield " modelo"
 
-
-app.dependency_overrides[get_user_litellm_client] = lambda: FakeLiteLLMClient()
+    async def stream_agent_run(self, agent_id, messages):
+        yield "hola"
+        yield " agente"
 
 
 @pytest.mark.asyncio
 async def test_create_list_and_send_message():
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        create = await client.post(
-            "/chats", json={"model": "claude-sonnet-5", "title": "Test"}
-        )
-        assert create.status_code == 201
-        chat_id = create.json()["id"]
+    app.dependency_overrides[get_current_user_id] = lambda: TEST_USER_ID
+    app.dependency_overrides[get_user_litellm_client] = lambda: FakeLiteLLMClient()
 
-        listed = await client.get("/chats")
-        assert listed.status_code == 200
-        assert any(c["id"] == chat_id for c in listed.json())
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            create = await client.post(
+                "/chats", json={"model_id": "claude-sonnet-5", "title": "Test"}
+            )
+            assert create.status_code == 201
+            chat_id = create.json()["id"]
 
-        msg = await client.post(
-            f"/chats/{chat_id}/messages",
-            json={"model": "claude-sonnet-5", "content": "hola"},
-        )
+            listed = await client.get("/chats")
+            assert listed.status_code == 200
+            assert any(c["id"] == chat_id for c in listed.json())
 
-        assert msg.status_code == 200
-        assert "event: done" in msg.text
+            # Interact with a model
+            msg = await client.post(
+                f"/chats/{chat_id}/messages",
+                json={"model_id": "claude-sonnet-5", "content": "hola"},
+            )
 
-        detail = await client.get(f"/chats/{chat_id}")
-        assert detail.status_code == 200
-        assert len(detail.json()["messages"]) == 2
+            assert msg.status_code == 200
+            assert "event: done" in msg.text
+
+            detail = await client.get(f"/chats/{chat_id}")
+            assert detail.status_code == 200
+            assert len(detail.json()["messages"]) == 2
+
+            # Interact with an agent
+            msg = await client.post(
+                f"/chats/{chat_id}/messages",
+                json={"agent_id": "easy_agent", "content": "hola"},
+            )
+
+            assert msg.status_code == 200
+            assert "event: done" in msg.text
+
+            detail = await client.get(f"/chats/{chat_id}")
+            assert detail.status_code == 200
+            assert len(detail.json()["messages"]) == 4
+    finally:
+        app.dependency_overrides.clear()

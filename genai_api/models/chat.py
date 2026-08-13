@@ -26,7 +26,7 @@ class Chat(Base):
     title: Mapped[str | None] = mapped_column(String(255), default=None)
 
     # Selected model
-    model: Mapped[str] = mapped_column(String(100))
+    model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
     # TBD: reserved for mcp_servers, tools, db_connections, documents...
     config: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")

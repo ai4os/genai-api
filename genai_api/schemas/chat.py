@@ -7,14 +7,14 @@ from genai_api.schemas.message import MessageOut
 
 
 class ChatCreate(BaseModel):
-    model: str
+    model_id: str | None = None
     title: str | None = None
 
 
 class ChatSummary(BaseModel):
     id: uuid.UUID
     title: str | None
-    model: str
+    model_id: str | None
     created_at: datetime
     updated_at: datetime
 

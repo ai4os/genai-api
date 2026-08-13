@@ -13,11 +13,27 @@ async def list_available_models(
     litellm: LiteLLMClient = Depends(get_user_litellm_client),
 ):
     """
-    Models available in LiteLLM (con la API key propia del usuario).
+    Models available in LiteLLM (using the user's API key).
     """
     models = await litellm.list_models()
-    # TODO: remove manually 'all-proxy-models' from list until we discover why
-    # it shows in the list
-    models = [m for m in models if m["id"] != "all-proxy-models"]
+    status = await litellm.get_models_status()
+    print(f"Models status: {status}")
 
-    return [ModelInfo(id=m["id"]) for m in models]
+    # Add status to each model
+    status_by_model = {s["model_name"]: s["status"] for s in status.values()}
+
+    # Remove manually models that include'embedding'
+    # and 'all-proxy-models' model from list
+    models = [
+        m
+        for m in models
+        if m["id"] != "all-proxy-models" and "embedding" not in m["id"].lower()
+    ]
+
+    return [
+        ModelInfo(
+            id=m["id"],
+            status=status_by_model.get(m["id"], "unknown"),
+        )
+        for m in models
+    ]

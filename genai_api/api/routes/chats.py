@@ -24,7 +24,7 @@ async def create_chat(
     user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(get_db),
 ):
-    chat = Chat(user_id=user_id, model=payload.model, title=payload.title)
+    chat = Chat(user_id=user_id, model_id=payload.model_id, title=payload.title)
     db.add(chat)
     await db.commit()
     await db.refresh(chat)
@@ -60,7 +60,7 @@ async def get_chat(
 
 
 def _sse_event(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.post("/{chat_id}/messages")
@@ -72,13 +72,21 @@ async def send_message(
     litellm_client: LiteLLMClient = Depends(get_user_litellm_client),
 ):
     """
-    Sends a message and streams the assistant’s response (SSE).
+    Sends a message and streams the response (SSE), either from a model
+    or from an agent depending on the payload.
 
     Events emitted:
-    - `delta` {"content": str} -> a snippet of text from the response
-    - `done`  {"message_id", "created_at"} -> the assistant’s message has now been persisted
-    - `error` {"detail"} -> failure during transmission; nothing is persisted
+    - `delta` {"content": str}
+    - `done`  {"message_id", "created_at", "model_id"?, "agent_id"?}
+    - `error` {"detail"}
     """
+    # Exclusividad: exactamente uno de los dos
+    if bool(payload.model_id) == bool(payload.agent_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Exactly one of model_id or agent_id is required",
+        )
+
     result = await db.execute(
         select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
     )
@@ -86,7 +94,7 @@ async def send_message(
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
 
-    # 1. Save user's message before starting to broadcast
+    # Save user message
     user_message = Message(
         chat_id=chat.id, role=MessageRole.user, content=payload.content
     )
@@ -94,19 +102,27 @@ async def send_message(
     await db.commit()
     await db.refresh(user_message)
 
-    # 2. Include chat history to provide context for the model
+    # Add message history for context
     history_result = await db.execute(
         select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
     )
     history = history_result.scalars().all()
     llm_messages = [{"role": m.role.value, "content": m.content} for m in history]
 
+    if payload.model_id:
+        response_generator = litellm_client.stream_chat_completion(
+            model_id=payload.model_id, messages=llm_messages
+        )
+    else:
+        response_generator = litellm_client.stream_agent_run(
+            agent_id=payload.agent_id, messages=llm_messages
+        )
+
+    # 4. Flujo de eventos SSE
     async def event_stream():
         full_content = ""
         try:
-            async for delta in litellm_client.stream_chat_completion(
-                model=payload.model, messages=llm_messages
-            ):
+            async for delta in response_generator:
                 full_content += delta
                 yield _sse_event("delta", {"content": delta})
         except HTTPException as exc:
@@ -117,19 +133,22 @@ async def send_message(
             chat_id=chat.id,
             role=MessageRole.assistant,
             content=full_content,
-            model=payload.model,
+            model_id=payload.model_id,
+            agent_id=payload.agent_id,
         )
         db.add(assistant_message)
         await db.commit()
         await db.refresh(assistant_message)
 
-        yield _sse_event(
-            "done",
-            {
-                "message_id": str(assistant_message.id),
-                "created_at": assistant_message.created_at.isoformat(),
-                "model": payload.model,
-            },
-        )
+        done_data = {
+            "message_id": str(assistant_message.id),
+            "created_at": assistant_message.created_at.isoformat(),
+        }
+        if payload.model_id:
+            done_data["model_id"] = payload.model_id
+        else:
+            done_data["agent_id"] = payload.agent_id
+
+        yield _sse_event("done", done_data)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
