@@ -12,6 +12,10 @@ import json
 import httpx
 from fastapi import HTTPException
 
+from asyncache import cached
+from cachetools import TTLCache
+from cachetools.keys import hashkey
+
 from a2a.client import A2ACardResolver
 
 from genai_api.core.config import settings
@@ -44,13 +48,38 @@ class LiteLLMClient:
         return response
 
     ######## MODELS ########
+    @cached(
+        cache=TTLCache(maxsize=1024, ttl=60 * 60 * 24),
+        key=lambda self: hashkey(self._api_key),
+    )
     async def list_models(self) -> list[dict]:
-        """Returns all the models configured in LiteLLM."""
+        """
+        Returns the id for every model visible to the user.
+        Cache: 1 day - per user
+        """
         response = await self._request("GET", "/models")
         return response.json()["data"]
 
+    @cached(cache=TTLCache(maxsize=1, ttl=60 * 60 * 24))
+    async def get_model_info(self) -> list[dict]:
+        """
+        Returns detailed info (capabilities, cost, limits) for every model
+        visible to the current API key. Users do not have access to this endpoint,
+        so we use the service API key.
+        Cache: 1 day - global
+        """
+        response = await self._request(
+            "GET", "/model/info", api_key=settings.litellm_api_key
+        )
+        return response.json()["data"]
+
+    @cached(cache=TTLCache(maxsize=1, ttl=60 * 60 * 24 * 7))
     async def get_models_status(self) -> list[dict]:
-        # Users do not have access to this endpoint, so use the service API key.
+        """
+        Returns the status for every model visible to the current API key.
+        Users do not have access to this endpoint, so use the service API key.
+        Cache: 1 week - global
+        """
         response = await self._request(
             "GET",
             "/health/latest",

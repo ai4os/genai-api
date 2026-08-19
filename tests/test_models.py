@@ -16,8 +16,56 @@ class FakeLiteLLMClient(LiteLLMClient):
 
     async def list_models(self):
         return [
-            {"id": "claude-sonnet-5"},
-            {"id": "gpt-4o"},
+            {
+                "id": "claude-sonnet-5",
+                "model_info": {
+                    "max_input_tokens": 200000,
+                    "supports_vision": True,
+                    "supports_reasoning": True,
+                    "supports_function_calling": True,
+                    "input_cost_per_token": 3e-6,
+                    "output_cost_per_token": 1.5e-5,
+                },
+                "status": "healthy",
+            },
+            {
+                "id": "gpt-4o",
+                "model_info": {
+                    "max_input_tokens": 128000,
+                    "supports_vision": True,
+                    "supports_reasoning": False,
+                    "supports_function_calling": True,
+                    "input_cost_per_token": 2.5e-6,
+                    "output_cost_per_token": 1e-5,
+                },
+                "status": "unknown",
+            },
+        ]
+
+    async def get_model_info(self):
+        return [
+            {
+                "model_name": "claude-sonnet-5",
+                "model_info": {
+                    "max_input_tokens": 200000,
+                    "supports_vision": True,
+                    "supports_reasoning": True,
+                    "supports_function_calling": True,
+                    "input_cost_per_token": 3e-6,
+                    "output_cost_per_token": 1.5e-5,
+                },
+            },
+            {
+                "model_name": "gpt-4o",
+                "model_info": {
+                    "max_input_tokens": 128000,
+                    "supports_vision": True,
+                    "supports_reasoning": False,
+                    "supports_function_calling": True,
+                    "input_cost_per_token": 2.5e-6,
+                    "output_cost_per_token": 1e-5,
+                },
+            },
         ]
 
     async def get_models_status(self):
@@ -49,8 +97,26 @@ async def test_list_available_models():
 
         assert response.status_code == 200
         assert response.json() == [
-            {"id": "claude-sonnet-5", "status": "healthy"},
-            {"id": "gpt-4o", "status": "unknown"},
+            {
+                "id": "claude-sonnet-5",
+                "status": "healthy",
+                "max_input_tokens": 200000,
+                "supports_vision": True,
+                "supports_reasoning": True,
+                "supports_function_calling": True,
+                "input_cost_per_million": 3.0,
+                "output_cost_per_million": 15.0,
+            },
+            {
+                "id": "gpt-4o",
+                "status": "unknown",
+                "max_input_tokens": 128000,
+                "supports_vision": True,
+                "supports_reasoning": False,
+                "supports_function_calling": True,
+                "input_cost_per_million": 2.5,
+                "output_cost_per_million": 10.0,
+            },
         ]
     finally:
         app.dependency_overrides.clear()
