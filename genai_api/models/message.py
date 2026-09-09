@@ -36,7 +36,8 @@ class Message(Base):
     model_id: Mapped[str | None] = mapped_column(nullable=True)
     agent_id: Mapped[str | None] = mapped_column(nullable=True)
 
-    # TBD: reserved for tool_calls, attachments, citations.
+    # Reserved for images, thinking
+    # TBD: tool_calls, attachments, citations
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
     created_at: Mapped[datetime] = mapped_column(
@@ -44,3 +45,16 @@ class Message(Base):
     )
 
     chat: Mapped["Chat"] = relationship(back_populates="messages")
+
+    @property
+    def images(self) -> list[dict] | None:
+        """Derived from extra[“images”]; exposed as a flat attribute so that
+        MessageOut (from_attributes=True) can serialise it without any additional logic."""
+        return (self.extra or {}).get("images")
+
+    @property
+    def thinking(self) -> str | None:
+        """Derived from extra[“thinking”]; exposed as a flat attribute so that
+        MessageOut (from_attributes=True) can serialise it without any additional logic.
+        Only present in assistant messages where the model/agent has exposed reasoning."""
+        return (self.extra or {}).get("thinking")

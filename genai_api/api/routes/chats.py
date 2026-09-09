@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from genai_api.api.deps import get_current_user_id, get_user_litellm_client
+from genai_api.core.config import settings
 from genai_api.db.session import get_db
 from genai_api.models.chat import Chat
 from genai_api.models.message import Message, MessageRole
@@ -54,6 +55,7 @@ async def get_chat(
         .where(Chat.id == chat_id, Chat.user_id == user_id)
     )
     chat = result.scalar_one_or_none()
+
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
     return chat
@@ -61,6 +63,33 @@ async def get_chat(
 
 def _sse_event(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _to_llm_content(message: Message, include_images: bool) -> str | list[dict]:
+    """
+    Builds the `content` field for the LiteLLM payload from a saved Message.
+    If the message contains images and `include_images` is True, it returns
+    a list of OpenAI-style blocks (text + image_url). Otherwise, plain text .
+    """
+    images = message.images
+    if not images:
+        return message.content
+
+    if not include_images:
+        marker = f"[{len(images)} image(s) attached, not resent]"
+        return f"{message.content}\n{marker}" if message.content else marker
+
+    blocks = []
+    if message.content:
+        blocks.append({"type": "text", "text": message.content})
+    for img in images:
+        blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
+            }
+        )
+    return blocks
 
 
 @router.post("/{chat_id}/messages")
@@ -76,7 +105,7 @@ async def send_message(
     or from an agent depending on the payload.
 
     Events emitted:
-    - `delta` {"content": str}
+    - `delta` {"content"?: str, "thinking"?: str}
     - `done`  {"message_id", "created_at", "model_id"?, "agent_id"?}
     - `error` {"detail"}
     """
@@ -87,6 +116,24 @@ async def send_message(
             detail="Exactly one of model_id or agent_id is required",
         )
 
+    if payload.images:
+        if payload.agent_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Images are not supported when sending to an agent",
+            )
+
+        capabilities = await litellm_client.get_model_capabilities(payload.model_id)
+        if not capabilities.get("supports_vision"):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{payload.model_id}' does not support image input",
+            )
+
+        total_bytes = sum(len(img.data) for img in payload.images) * 3 // 4
+        if total_bytes > settings.max_images_total_bytes:
+            raise HTTPException(status_code=400, detail="Images payload too large")
+
     result = await db.execute(
         select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
     )
@@ -96,7 +143,14 @@ async def send_message(
 
     # Save user message
     user_message = Message(
-        chat_id=chat.id, role=MessageRole.user, content=payload.content
+        chat_id=chat.id,
+        role=MessageRole.user,
+        content=payload.content,
+        extra=(
+            {"images": [img.model_dump() for img in payload.images]}
+            if payload.images
+            else {}
+        ),
     )
     db.add(user_message)
     await db.commit()
@@ -107,7 +161,13 @@ async def send_message(
         select(Message).where(Message.chat_id == chat.id).order_by(Message.created_at)
     )
     history = history_result.scalars().all()
-    llm_messages = [{"role": m.role.value, "content": m.content} for m in history]
+    llm_messages = [
+        {
+            "role": m.role.value,
+            "content": _to_llm_content(m, include_images=(m.id == user_message.id)),
+        }
+        for m in history
+    ]
 
     if payload.model_id:
         response_generator = litellm_client.stream_chat_completion(
@@ -115,16 +175,21 @@ async def send_message(
         )
     else:
         response_generator = litellm_client.stream_agent_run(
-            agent_id=payload.agent_id, messages=llm_messages
+            chat_id=str(chat_id), agent_id=payload.agent_id, messages=llm_messages
         )
 
     # 4. Flujo de eventos SSE
     async def event_stream():
         full_content = ""
+        full_thinking = ""
         try:
-            async for delta in response_generator:
-                full_content += delta
-                yield _sse_event("delta", {"content": delta})
+            async for channel, delta in response_generator:
+                if channel == "thinking":
+                    full_thinking += delta
+                    yield _sse_event("delta", {"thinking": delta})
+                else:
+                    full_content += delta
+                    yield _sse_event("delta", {"content": delta})
         except HTTPException as exc:
             yield _sse_event("error", {"detail": exc.detail})
             return
@@ -135,6 +200,7 @@ async def send_message(
             content=full_content,
             model_id=payload.model_id,
             agent_id=payload.agent_id,
+            extra=({"thinking": full_thinking} if full_thinking else {}),
         )
         db.add(assistant_message)
         await db.commit()

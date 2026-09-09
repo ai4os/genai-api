@@ -87,6 +87,16 @@ class LiteLLMClient:
         )
         return response.json()["latest_health_checks"]
 
+    async def get_model_capabilities(self, model_id: str) -> dict:
+        """
+        Returns the capabilities for a specific model.
+        """
+        all_model_info = await self.get_model_info()
+        info_by_model = {
+            m["model_name"]: m.get("model_info") or {} for m in all_model_info
+        }
+        return info_by_model.get(model_id, {})
+
     async def chat_completion(self, model: str, messages: list[dict]) -> dict:
         """(OLD) Non-streaming version (kept in case it's needed somewhere)."""
         response = await self._request(
@@ -98,8 +108,12 @@ class LiteLLMClient:
 
     async def stream_chat_completion(self, model_id: str, messages: list[dict]):
         """
-        An asynchronous generator that produces chunks of text (content deltas) from the
+        An asynchronous generator that produces chunks of text from the
         LiteLLM streaming endpoint (SSE, OpenAI-compatible format).
+
+        Yields tuples `(channel, text)` where `channel` is:
+        - "content": the actual answer.
+        - "thinking": the model's chain of thought. Not every model/provider sends this field.
         """
         payload = {"model": model_id, "messages": messages, "stream": True}
         # timeout=None: a streaming response may take quite a long time to
@@ -126,10 +140,16 @@ class LiteLLMClient:
                     if data == "[DONE]":
                         break
                     chunk = json.loads(data)
-                    delta = chunk["choices"][0]["delta"]
+                    choices = chunk.get("choices") or [{}]
+                    delta = choices[0].get("delta", {})
+
+                    reasoning = delta.get("reasoning_content")
+                    if reasoning:
+                        yield "thinking", reasoning
+
                     content = delta.get("content")
                     if content:
-                        yield content
+                        yield "content", content
 
     ######## AGENTS ########
     async def list_agents(self) -> list[dict]:
@@ -137,7 +157,7 @@ class LiteLLMClient:
         response = await self._request("GET", "/v1/agents")
         return response.json()
 
-    async def stream_agent_run(self, agent_id: str, messages: list[dict]):
+    async def stream_agent_run(self, chat_id: str, agent_id: str, messages: list[dict]):
         import urllib.parse
         from uuid import uuid4
 
@@ -163,18 +183,19 @@ class LiteLLMClient:
                     status_code=500, detail=f"Error al resolver Agent Card: {str(e)}"
                 )
 
-            # LiteLLM payload (message/stream)
+            # LiteLLM payload
             request_id = str(uuid4())
             message_id = uuid4().hex
 
             payload = {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "method": "message/send",  # TODO: change to message/stream
+                "method": "message/stream",
                 "params": {
                     "message": {
                         "kind": "message",
                         "messageId": message_id,
+                        "contextId": chat_id,
                         "role": "user",
                         "parts": [{"kind": "text", "text": last_content}],
                     }
@@ -210,18 +231,26 @@ class LiteLLMClient:
                                 result.get("kind") == "artifact-update"
                                 and "artifact" in result
                             ):
-                                for part in result["artifact"].get("parts", []):
+                                artifact = result["artifact"]
+                                channel = (artifact.get("metadata") or {}).get(
+                                    "channel"
+                                )
+                                mapped_channel = (
+                                    "thinking" if channel == "thinking" else "content"
+                                )
+
+                                for part in artifact.get("parts", []):
                                     if part.get("kind") == "text":
-                                        content = part.get("text")
-                                        if content:
-                                            yield content
+                                        text = part.get("text")
+                                        if text:
+                                            yield mapped_channel, text
 
                             elif "message" in result:
                                 for part in result["message"].get("parts", []):
                                     if part.get("kind") == "text":
-                                        content = part.get("text")
-                                        if content:
-                                            yield content
+                                        text = part.get("text")
+                                        if text:
+                                            yield "content", text
 
                             elif (
                                 result.get("kind") == "status-update"

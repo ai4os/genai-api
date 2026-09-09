@@ -26,7 +26,8 @@ async def list_available_models(
             name=agent["agent_name"],
             description=agent["agent_card_params"]["description"],
             url=agent["agent_card_params"]["url"],
-            provider=agent["litellm_params"]["custom_llm_provider"],
+            # TODO: ya no existe custom_llm_provider en los parámeros de litellm - comprobar
+            provider="test",  # agent["litellm_params"]["custom_llm_provider"],
             skills=[
                 SkillInfo(
                     id=skill["id"],
