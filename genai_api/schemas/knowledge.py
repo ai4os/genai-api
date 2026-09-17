@@ -49,6 +49,12 @@ class DocumentUploadResponse(BaseModel):
     status: str
 
 
+class DocumentDeleteResponse(BaseModel):
+    filename: str
+    collection_id: str
+    message: str
+
+
 class CollectionDeleteResponse(BaseModel):
     collection_id: str
     message: str

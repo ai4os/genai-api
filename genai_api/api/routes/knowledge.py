@@ -14,6 +14,7 @@ from genai_api.schemas.knowledge import (
     CollectionInfo,
     CollectionScope,
     CollectionType,
+    DocumentDeleteResponse,
     DocumentUploadResponse,
 )
 
@@ -95,6 +96,19 @@ def is_user_collection_owner(
     desc = milvus_client.describe_collection(collection_name=collection_name)
     owner = desc.get("properties", {}).get("owner")
     return str(owner) == str(user_id)
+
+
+def is_user_collection_accessible(
+    milvus_client: MilvusClient,
+    collection_name: str,
+    user_id: uuid.UUID,
+) -> bool:
+    """Checks whether the collection exists and is accessible by the user (public or owned)."""
+    if not milvus_client.has_collection(collection_name=collection_name):
+        return False
+    desc = milvus_client.describe_collection(collection_name=collection_name)
+    owner = desc.get("properties", {}).get("owner")
+    return owner == "public" or str(owner) == str(user_id)
 
 
 def ensure_collection_schema(
@@ -341,6 +355,54 @@ async def create_collection(
     )
 
 
+@router.get("/collections/{collection_id}/documents", response_model=list[str])
+async def list_collection_documents(
+    collection_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> list[str]:
+    """
+    List all document filenames within a particular collection.
+    """
+    client = get_milvus_client()
+
+    if not client.has_collection(collection_name=collection_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection '{collection_id}' not found",
+        )
+
+    if not is_user_collection_accessible(client, collection_id, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view documents in this collection",
+        )
+
+    try:
+        client.load_collection(collection_name=collection_id)
+        iterator = client.query_iterator(
+            collection_name=collection_id,
+            filter="",
+            output_fields=["filename"],
+            batch_size=1000,
+        )
+        filenames: set[str] = set()
+        while True:
+            result_batch = iterator.next()
+            if not result_batch:
+                break
+            for entry in result_batch:
+                fname = entry.get("filename")
+                if fname:
+                    filenames.add(fname)
+        iterator.close()
+        return sorted(list(filenames))
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing documents in collection '{collection_id}': {str(e)}",
+        ) from e
+
+
 @router.post("/collections/{collection_id}/documents", response_model=DocumentUploadResponse)
 async def upload_document_to_collection(
     collection_id: str,
@@ -434,6 +496,51 @@ async def upload_document_to_collection(
         collection_id=collection_id,
         chunks_count=len(chunks),
         status="indexed",
+    )
+
+
+@router.delete(
+    "/collections/{collection_id}/documents/{filename}",
+    response_model=DocumentDeleteResponse,
+)
+async def delete_collection_document(
+    collection_id: str,
+    filename: str,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> DocumentDeleteResponse:
+    """
+    Delete a particular document (all chunks with matching filename) within a collection.
+    Validates that the user is the owner of the collection.
+    """
+    client = get_milvus_client()
+
+    if not client.has_collection(collection_name=collection_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Collection '{collection_id}' not found",
+        )
+
+    if not is_user_collection_owner(client, collection_id, current_user.id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to delete documents from this collection",
+        )
+
+    try:
+        client.delete(
+            collection_name=collection_id,
+            filter=f'filename == "{filename}"',
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error deleting document '{filename}' from collection '{collection_id}': {str(e)}",
+        ) from e
+
+    return DocumentDeleteResponse(
+        filename=filename,
+        collection_id=collection_id,
+        message=f"Document '{filename}' deleted successfully from collection '{collection_id}'",
     )
 
 

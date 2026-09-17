@@ -4,7 +4,11 @@ from httpx import ASGITransport, AsyncClient
 
 from genai_api.api.deps import CurrentUser, get_current_user
 from genai_api.main import app
-from conftest import TEST_USER_ID
+
+try:
+    from tests.conftest import TEST_USER_ID
+except ModuleNotFoundError:
+    from conftest import TEST_USER_ID
 
 TEST_FILES_DIR = Path(__file__).parent / "test_files"
 
@@ -70,7 +74,34 @@ async def test_knowledge_lifecycle():
                 assert upload_data["chunks_count"] > 0
                 assert upload_data["status"] == "indexed"
 
-            # 5. Delete the collection
+            # 5. List all documents in the collection
+            docs_res = await client.get(
+                f"/knowledge/collections/{collection_id}/documents"
+            )
+            assert docs_res.status_code == 200
+            doc_filenames = docs_res.json()
+            assert set(doc_filenames) == set(test_files)
+
+            # 6. Delete a particular file within the collection
+            file_to_delete = "test.csv"
+            del_file_res = await client.delete(
+                f"/knowledge/collections/{collection_id}/documents/{file_to_delete}"
+            )
+            assert del_file_res.status_code == 200
+            del_file_data = del_file_res.json()
+            assert del_file_data["filename"] == file_to_delete
+            assert del_file_data["collection_id"] == collection_id
+
+            # Verify the file is no longer in the collection
+            docs_after_del_res = await client.get(
+                f"/knowledge/collections/{collection_id}/documents"
+            )
+            assert docs_after_del_res.status_code == 200
+            remaining_docs = docs_after_del_res.json()
+            assert file_to_delete not in remaining_docs
+            assert set(remaining_docs) == set(test_files) - {file_to_delete}
+
+            # 7. Delete the collection
             delete_res = await client.delete(f"/knowledge/collections/{collection_id}")
             assert delete_res.status_code == 200
             delete_data = delete_res.json()

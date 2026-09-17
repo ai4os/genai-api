@@ -6,6 +6,7 @@ from genai_api.schemas.knowledge import (
     CollectionInfo,
     CollectionScope,
     CollectionType,
+    DocumentDeleteResponse,
     DocumentUploadResponse,
 )
 from genai_api.schemas.message import MessageCreate, MessageOut
@@ -22,6 +23,7 @@ __all__ = [
     "CollectionInfo",
     "CollectionScope",
     "CollectionType",
+    "DocumentDeleteResponse",
     "DocumentUploadResponse",
     "MessageCreate",
     "MessageOut",
