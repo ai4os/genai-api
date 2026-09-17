@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     litellm_api_key: str
     papi_base_url: str
     max_images_total_bytes: int = 15_000_000  # 15 MB - if this variable changes, update the corresponding UI variable.
+    milvus_uri: str = "https://milvus.k8s.cloud.ai4eosc.eu"
+    milvus_user: str = "root"
+    milvus_pwd: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

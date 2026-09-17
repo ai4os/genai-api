@@ -95,7 +95,6 @@ async def get_user_litellm_client(
     db: AsyncSession = Depends(get_db),
 ) -> LiteLLMClient:
     """
-    Devuelve un LiteLLMClient con la API key propia del usuario actual.
     Returns a LiteLLMClient configured with the current user's API key.
 
     If the user does not yet have a cached key in `users.litellm_api_key`,
@@ -109,4 +108,6 @@ async def get_user_litellm_client(
         user.litellm_api_key = await papi_client.create_genai_key()
         await db.commit()
 
-    return LiteLLMClient(api_key=user.litellm_api_key)
+    return LiteLLMClient(
+        api_key=user.litellm_api_key, user_token=current_user.raw_token
+    )

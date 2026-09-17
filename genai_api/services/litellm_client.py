@@ -22,9 +22,22 @@ from genai_api.core.config import settings
 
 
 class LiteLLMClient:
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str = "", user_token: str | None = None):
         # User key is used for most of the requests. If needed, we use the service key from settings.
         self._api_key = api_key
+        # User token is used by the Milvus MCP tool to make sure the user is able to
+        # access their private collections (LiteLLM forwards the headers to the MCP)
+        self._user_token = user_token
+
+    def _get_headers(
+        self, api_key: str | None = None, extra_headers: dict | None = None
+    ) -> dict:
+        headers = {"Authorization": f"Bearer {api_key or self._api_key}"}
+        if self._user_token:
+            headers["x-user-token"] = self._user_token
+        if extra_headers:
+            headers.update(extra_headers)
+        return headers
 
     async def _request(
         self,
@@ -32,13 +45,15 @@ class LiteLLMClient:
         path: str,
         *,
         api_key: str | None = None,
+        headers: dict | None = None,
         **kwargs,
     ) -> httpx.Response:
+        req_headers = self._get_headers(api_key=api_key, extra_headers=headers)
         async with httpx.AsyncClient(base_url=settings.litellm_base_url) as client:
             response = await client.request(
                 method,
                 path,
-                headers={"Authorization": f"Bearer {api_key or self._api_key}"},
+                headers=req_headers,
                 **kwargs,
             )
 
@@ -118,13 +133,14 @@ class LiteLLMClient:
         payload = {"model": model_id, "messages": messages, "stream": True}
         # timeout=None: a streaming response may take quite a long time to
         # complete; httpx’s default timeout would cut it short prematurely.
+        headers = self._get_headers()
         async with httpx.AsyncClient(
             base_url=settings.litellm_base_url, timeout=None
         ) as client:
             async with client.stream(
                 "POST",
                 "/chat/completions",
-                headers={"Authorization": f"Bearer {self._api_key}"},
+                headers=headers,
                 json=payload,
             ) as response:
                 if not response.is_success:
@@ -164,7 +180,7 @@ class LiteLLMClient:
         parsed_url = urllib.parse.urlparse(settings.litellm_base_url)
         clean_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
         base_url = f"{clean_base}/a2a/{agent_id}"
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = self._get_headers()
 
         last_content = messages[-1]["content"] if messages else ""
 
