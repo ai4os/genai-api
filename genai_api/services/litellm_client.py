@@ -198,6 +198,9 @@ class LiteLLMClient:
                         "contextId": chat_id,
                         "role": "user",
                         "parts": [{"kind": "text", "text": last_content}],
+                        "metadata": {
+                            "conversation_history": messages,
+                        },
                     }
                 },
             }
