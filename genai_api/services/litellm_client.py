@@ -167,6 +167,7 @@ class LiteLLMClient:
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
         last_content = messages[-1]["content"] if messages else ""
+        previous_messages = messages[:-1] if messages else ""
 
         async with httpx.AsyncClient(headers=headers, timeout=None) as http_client:
             resolver = A2ACardResolver(httpx_client=http_client, base_url=base_url)
@@ -199,7 +200,7 @@ class LiteLLMClient:
                         "role": "user",
                         "parts": [{"kind": "text", "text": last_content}],
                         "metadata": {
-                            "conversation_history": messages,
+                            "conversation_history": previous_messages,
                         },
                     }
                 },
