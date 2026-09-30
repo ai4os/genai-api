@@ -2,6 +2,8 @@ import uuid
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from genai_api.core.security import TokenValidationError, decode_token
@@ -49,12 +51,20 @@ async def get_current_user(
     username = payload.get("preferred_username")
     roles = payload.get("realm_access", {}).get("roles", [])
 
+    # Atomic upsert: avoids the race condition where concurrent requests
+    # for the same new user (e.g. the frontend firing /chats, /agents and
+    # /models in parallel) all see `user is None` and all try to INSERT,
+    # causing a UniqueViolationError on users_pkey.
+    insert_stmt = (
+        pg_insert(User)
+        .values(id=user_id, email=email, username=username)
+        .on_conflict_do_nothing(index_elements=["id"])
+    )
+    await db.execute(insert_stmt)
+    await db.commit()
+
     user = await db.get(User, user_id)
-    if user is None:
-        user = User(id=user_id, email=email, username=username)
-        db.add(user)
-        await db.commit()
-    elif user.email != email or user.username != username:
+    if user.email != email or user.username != username:
         user.email = email
         user.username = username
         await db.commit()
@@ -100,8 +110,19 @@ async def get_user_litellm_client(
     If the user does not yet have a cached key in `users.litellm_api_key`,
     it is created via PAPI using the user's own token, then stored so future
     requests do not need to call PAPI again.
+
+    Race condition fix: the frontend fires several requests in parallel
+    (/chats, /agents, /models, ...) on load. For a brand-new user, all of
+    them could see `litellm_api_key is None` at the same time and each try
+    to create a key in PAPI concurrently, causing 409s or duplicate/orphan
+    keys. `SELECT ... FOR UPDATE` locks the user's row so only the first
+    concurrent request creates the key; the others block until it commits,
+    then read the already-populated key instead of calling PAPI again.
     """
-    user = await db.get(User, current_user.id)
+    result = await db.execute(
+        select(User).where(User.id == current_user.id).with_for_update()
+    )
+    user = result.scalar_one()
 
     if user.litellm_api_key is None:
         papi_client = PAPIClient(token=current_user.raw_token)
