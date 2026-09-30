@@ -1,3 +1,4 @@
+import asyncio
 import json
 import uuid
 
@@ -8,6 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from genai_api.api.deps import get_current_user_id, get_user_litellm_client
+from genai_api.api.routes.knowledge import (
+    get_milvus_client,
+    is_user_collection_accessible,
+)
 from genai_api.core.config import settings
 from genai_api.db.session import get_db
 from genai_api.models.chat import Chat
@@ -92,6 +97,26 @@ def _to_llm_content(message: Message, include_images: bool) -> str | list[dict]:
     return blocks
 
 
+async def _find_inaccessible_collections(
+    collection_ids: list[str], user_id: uuid.UUID
+) -> list[str]:
+    """
+    Returns the collections that do not exist or that the user can neither own
+    nor read (public). pymilvus is synchronous, so it runs in a thread to avoid
+    blocking the event loop.
+    """
+
+    def _check() -> list[str]:
+        client = get_milvus_client()
+        return [
+            c
+            for c in collection_ids
+            if not is_user_collection_accessible(client, c, user_id)
+        ]
+
+    return await asyncio.to_thread(_check)
+
+
 @router.post("/{chat_id}/messages")
 async def send_message(
     chat_id: uuid.UUID,
@@ -105,34 +130,55 @@ async def send_message(
     or from an agent depending on the payload.
 
     Events emitted:
+    - `status` {"detail": "searching"}  (the model is querying the collections)
     - `delta` {"content"?: str, "thinking"?: str}
     - `done`  {"message_id", "created_at", "model_id"?, "agent_id"?}
     - `error` {"detail"}
     """
-    # Exclusividad: exactamente uno de los dos
     if bool(payload.model_id) == bool(payload.agent_id):
         raise HTTPException(
             status_code=400,
             detail="Exactly one of model_id or agent_id is required",
         )
 
-    if payload.images:
-        if payload.agent_id:
-            raise HTTPException(
-                status_code=400,
-                detail="Images are not supported when sending to an agent",
-            )
+    # Milvus knowledge collections ids
+    collection_ids = list(dict.fromkeys(payload.collection_ids or []))
 
+    if payload.agent_id and (payload.images or collection_ids):
+        raise HTTPException(
+            status_code=400,
+            detail="Images and collections are not supported when sending to an agent",
+        )
+
+    if payload.images or collection_ids:
         capabilities = await litellm_client.get_model_capabilities(payload.model_id)
-        if not capabilities.get("supports_vision"):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Model '{payload.model_id}' does not support image input",
-            )
 
-        total_bytes = sum(len(img.data) for img in payload.images) * 3 // 4
-        if total_bytes > settings.max_images_total_bytes:
-            raise HTTPException(status_code=400, detail="Images payload too large")
+        # Image management
+        if payload.images:
+            if not capabilities.get("supports_vision"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{payload.model_id}' does not support image input",
+                )
+
+            total_bytes = sum(len(img.data) for img in payload.images) * 3 // 4
+            if total_bytes > settings.max_images_total_bytes:
+                raise HTTPException(status_code=400, detail="Images payload too large")
+
+        # Milvus MCP tool
+        if collection_ids:
+            if not capabilities.get("supports_function_calling"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{payload.model_id}' does not support tool calling, "
+                    "which is required to use collections",
+                )
+            forbidden = await _find_inaccessible_collections(collection_ids, user_id)
+            if forbidden:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Collections not found or not accessible: {forbidden}",
+                )
 
     result = await db.execute(
         select(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
@@ -171,11 +217,15 @@ async def send_message(
 
     if payload.model_id:
         response_generator = litellm_client.stream_chat_completion(
-            model_id=payload.model_id, messages=llm_messages
+            model_id=payload.model_id,
+            messages=llm_messages,
+            collection_ids=collection_ids or None,
         )
     else:
         response_generator = litellm_client.stream_agent_run(
-            chat_id=str(chat_id), agent_id=payload.agent_id, messages=llm_messages
+            chat_id=str(chat_id),
+            agent_id=payload.agent_id,
+            messages=llm_messages,
         )
 
     # 4. Flujo de eventos SSE
@@ -184,7 +234,9 @@ async def send_message(
         full_thinking = ""
         try:
             async for channel, delta in response_generator:
-                if channel == "thinking":
+                if channel == "status":
+                    yield _sse_event("status", {"detail": delta})
+                elif channel == "thinking":
                     full_thinking += delta
                     yield _sse_event("delta", {"thinking": delta})
                 else:

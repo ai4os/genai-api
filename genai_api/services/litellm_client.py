@@ -20,24 +20,57 @@ from a2a.client import A2ACardResolver
 
 from genai_api.core.config import settings
 
+# Alias of the Milvus MCP server registered in LiteLLM and its tools
+MILVUS_MCP_SERVER = "knowledge_milvus"
+MILVUS_MCP_TOOL = "search"
+
 
 class LiteLLMClient:
     def __init__(self, api_key: str = "", user_token: str | None = None):
         # User key is used for most of the requests. If needed, we use the service key from settings.
         self._api_key = api_key
-        # User token is used by the Milvus MCP tool to make sure the user is able to
-        # access their private collections (LiteLLM forwards the headers to the MCP)
+        # User token is only sent inside the Milvus MCP tool definition (see
+        # `_milvus_mcp_tool`), so that it is never exposed to other tools/MCPs.
         self._user_token = user_token
 
     def _get_headers(
         self, api_key: str | None = None, extra_headers: dict | None = None
     ) -> dict:
         headers = {"Authorization": f"Bearer {api_key or self._api_key}"}
-        if self._user_token:
-            headers["x-user-token"] = self._user_token
         if extra_headers:
             headers.update(extra_headers)
         return headers
+
+    def _milvus_mcp_tool(self) -> dict:
+        """
+        MCP tool definition for LiteLLM's /chat/completions. With
+        `require_approval: "never"` LiteLLM runs the tool calls itself and streams
+        back the final answer, so we do not need to handle tool calls here.
+        """
+        tool = {
+            "type": "mcp",
+            "server_label": MILVUS_MCP_SERVER,
+            "server_url": f"litellm_proxy/mcp/{MILVUS_MCP_SERVER}",
+            "allowed_tools": [MILVUS_MCP_TOOL],
+            "require_approval": "never",
+        }
+        if self._user_token:
+            tool["headers"] = {"x-user-token": self._user_token}
+        return tool
+
+    @staticmethod
+    def _collections_system_message(collection_ids: list[str]) -> dict:
+        return {
+            "role": "system",
+            "content": (
+                "You can search the user's knowledge base with the "
+                f"`{MILVUS_MCP_TOOL}` tool. When the question may be answered by "
+                "the documents, call it with "
+                f"collections={json.dumps(collection_ids)} (use exactly these ids). "
+                "Base your answer on the retrieved passages and mention the source "
+                "filename. If nothing relevant is found, say so instead of guessing."
+            ),
+        }
 
     async def _request(
         self,
@@ -121,16 +154,36 @@ class LiteLLMClient:
         )
         return response.json()
 
-    async def stream_chat_completion(self, model_id: str, messages: list[dict]):
+    async def stream_chat_completion(
+        self,
+        model_id: str,
+        messages: list[dict],
+        collection_ids: list[str] | None = None,
+    ):
         """
         An asynchronous generator that produces chunks of text from the
         LiteLLM streaming endpoint (SSE, OpenAI-compatible format).
 
+        `collection_ids`: knowledge bases selected by the user for this
+        message only. When present, the Milvus MCP tool is attached to the
+        request and a system message tells the model which collections to
+        search. The caller must have validated that the user can
+        access them and that the model supports tool calling.
+
         Yields tuples `(channel, text)` where `channel` is:
         - "content": the actual answer.
         - "thinking": the model's chain of thought. Not every model/provider sends this field.
+        - "status": "searching", emitted once when the model calls the MCP tool
         """
         payload = {"model": model_id, "messages": messages, "stream": True}
+        if collection_ids:
+            payload["messages"] = [
+                self._collections_system_message(collection_ids),
+                *messages,
+            ]
+            payload["tools"] = [self._milvus_mcp_tool()]
+            payload["tool_choice"] = "auto"
+        announced_search = False
         # timeout=None: a streaming response may take quite a long time to
         # complete; httpx’s default timeout would cut it short prematurely.
         headers = self._get_headers()
@@ -158,6 +211,12 @@ class LiteLLMClient:
                     chunk = json.loads(data)
                     choices = chunk.get("choices") or [{}]
                     delta = choices[0].get("delta", {})
+
+                    # LiteLLM adds MCP info under provider_specific_fields.
+                    extras = delta.get("provider_specific_fields") or {}
+                    if extras.get("mcp_tool_calls") and not announced_search:
+                        announced_search = True
+                        yield "status", "searching"
 
                     reasoning = delta.get("reasoning_content")
                     if reasoning:

@@ -19,6 +19,7 @@ class MessageCreate(BaseModel):
     model_id: str | None = None
     agent_id: str | None = None
     images: list[ImageInput] | None = None
+    collection_ids: list[str] | None = None
 
 
 class MessageOut(BaseModel):
