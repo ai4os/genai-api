@@ -7,7 +7,7 @@ from genai_api.services.litellm_client import LiteLLMClient
 router = APIRouter(prefix="/models", tags=["models"])
 
 EXCLUDED_IDS = {"all-proxy-models"}
-EXCLUDED_SUBSTRINGS = ("embedding", "*")
+EXCLUDED_SUBSTRINGS = ("embedding", "*", "default-")
 
 
 def _cost_per_million(cost_per_token) -> float | None:
