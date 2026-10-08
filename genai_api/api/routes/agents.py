@@ -36,6 +36,12 @@ async def list_available_models(
                 )
                 for skill in agent["agent_card_params"]["skills"]
             ],
+            input_cost_per_million=agent["litellm_params"]["input_cost_per_token"]
+            * 10**6,  # to convert from token to million
+            output_cost_per_million=agent["litellm_params"]["output_cost_per_token"]
+            * 10**6,  # to convert from token to million
+            dev_status=agent["litellm_params"]["metadata"]["dev_status"],
+            suggestions=agent["agent_card_params"]["skills"][0]["examples"],
         )
         for agent in agents
     ]
