@@ -36,7 +36,7 @@ class Message(Base):
     model_id: Mapped[str | None] = mapped_column(nullable=True)
     agent_id: Mapped[str | None] = mapped_column(nullable=True)
 
-    # Reserved for images, thinking
+    # Reserved for images, files, thinking
     # TBD: tool_calls, attachments, citations
     extra: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
@@ -51,6 +51,12 @@ class Message(Base):
         """Derived from extra[“images”]; exposed as a flat attribute so that
         MessageOut (from_attributes=True) can serialise it without any additional logic."""
         return (self.extra or {}).get("images")
+
+    @property
+    def files(self) -> list[dict] | None:
+        """Derived from extra["files"]: references (name, mimetype) to documents
+        uploaded to the chat's Milvus collection. Only names are stored, not content."""
+        return (self.extra or {}).get("files")
 
     @property
     def thinking(self) -> str | None:

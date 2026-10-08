@@ -2,7 +2,16 @@ from typing import Any
 import uuid
 
 import anydoc
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from openai import OpenAI
 from pymilvus import DataType, MilvusClient
 
@@ -111,6 +120,28 @@ def is_user_collection_accessible(
     return owner == "public" or str(owner) == str(user_id)
 
 
+def find_conversation_collection_id(
+    milvus_client: MilvusClient,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID | str,
+) -> str | None:
+    """
+    Returns the id of the user's collection of type `conversation` linked to the
+    given chat, or None.
+    """
+    for name in milvus_client.list_collections():
+        props = milvus_client.describe_collection(collection_name=name).get(
+            "properties", {}
+        )
+        if (
+            str(props.get("owner")) == str(user_id)
+            and props.get("type") == CollectionType.CONVERSATION.value
+            and props.get("conversation_id") == str(conversation_id)
+        ):
+            return name
+    return None
+
+
 def ensure_collection_schema(
     milvus_client: MilvusClient,
     collection_name: str,
@@ -162,7 +193,11 @@ def ensure_collection_schema(
         if conversation_id:
             properties["conversation_id"] = conversation_id
         if collection_type is not None:
-            type_val = collection_type.value if isinstance(collection_type, CollectionType) else str(collection_type)
+            type_val = (
+                collection_type.value
+                if isinstance(collection_type, CollectionType)
+                else str(collection_type)
+            )
             properties["type"] = type_val
 
         milvus_client.create_collection(
@@ -173,7 +208,9 @@ def ensure_collection_schema(
         )
 
 
-def semantic_chunking(text: str, chunk_size: int = 2048, overlap: int = 256) -> list[str]:
+def semantic_chunking(
+    text: str, chunk_size: int = 2048, overlap: int = 256
+) -> list[str]:
     """Splits text into chunks respecting semantic boundaries with overlap."""
     separators = ["\n\n", "\n", ". ", "! ", "? ", " ", ""]
 
@@ -271,6 +308,30 @@ def generate_embeddings(
     return embeddings
 
 
+def delete_conversation_collections(
+    milvus_client: MilvusClient,
+    user_id: uuid.UUID,
+    conversation_id: uuid.UUID | str,
+) -> list[str]:
+    """
+    Drops every `conversation` collection owned by the user and linked to the
+    given chat. Returns the names of the dropped collections (empty if none).
+    """
+    deleted: list[str] = []
+    for name in milvus_client.list_collections():
+        props = milvus_client.describe_collection(collection_name=name).get(
+            "properties", {}
+        )
+        if (
+            str(props.get("owner")) == str(user_id)
+            and props.get("type") == CollectionType.CONVERSATION.value
+            and props.get("conversation_id") == str(conversation_id)
+        ):
+            milvus_client.drop_collection(collection_name=name)
+            deleted.append(name)
+    return deleted
+
+
 # ==========================================
 # Routes
 # ==========================================
@@ -315,7 +376,9 @@ async def list_collections(
     return results
 
 
-@router.post("/collections", response_model=CollectionInfo, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/collections", response_model=CollectionInfo, status_code=status.HTTP_201_CREATED
+)
 async def create_collection(
     payload: CollectionCreate,
     current_user: CurrentUser = Depends(get_current_user),
@@ -403,7 +466,9 @@ async def list_collection_documents(
         ) from e
 
 
-@router.post("/collections/{collection_id}/documents", response_model=DocumentUploadResponse)
+@router.post(
+    "/collections/{collection_id}/documents", response_model=DocumentUploadResponse
+)
 async def upload_document_to_collection(
     collection_id: str,
     file: UploadFile = File(..., description="Document file to convert and index"),
@@ -432,7 +497,9 @@ async def upload_document_to_collection(
     # Read and convert document
     try:
         content = await file.read()
-        markdown_text = convert_document_to_markdown(content, file.filename or "doc.txt")
+        markdown_text = convert_document_to_markdown(
+            content, file.filename or "doc.txt"
+        )
     except HTTPException:
         raise
     except Exception as e:

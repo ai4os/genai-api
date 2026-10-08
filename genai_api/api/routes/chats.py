@@ -4,12 +4,14 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from genai_api.api.deps import get_current_user_id, get_user_litellm_client
 from genai_api.api.routes.knowledge import (
+    delete_conversation_collections,
+    find_conversation_collection_id,
     get_milvus_client,
     is_user_collection_accessible,
 )
@@ -24,6 +26,93 @@ from genai_api.services.litellm_client import LiteLLMClient
 router = APIRouter(prefix="/chats", tags=["chats"])
 
 
+# ==========================================
+# Helpers
+# =========================================
+
+
+def _sse_event(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _to_llm_content(message: Message, include_images: bool) -> str | list[dict]:
+    """
+    Builds the `content` field for the LiteLLM payload from a saved Message.
+    If the message contains images and `include_images` is True, it returns
+    a list of OpenAI-style blocks (text + image_url). Otherwise, plain text.
+    Attached files are only mentioned by name; their content is in Milvus.
+    """
+    text = message.content
+    if message.files:
+        names = ", ".join(f["filename"] for f in message.files)
+        marker = f"[Attached files: {names}]"
+        text = f"{text}\n{marker}" if text else marker
+
+    images = message.images
+    if not images:
+        return text
+
+    if not include_images:
+        marker = f"[{len(images)} image(s) attached, not resent]"
+        return f"{text}\n{marker}" if text else marker
+
+    blocks = []
+    if text:
+        blocks.append({"type": "text", "text": text})
+    for img in images:
+        blocks.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
+            }
+        )
+    return blocks
+
+
+async def _find_inaccessible_collections(
+    collection_ids: list[str], user_id: uuid.UUID
+) -> list[str]:
+    """
+    Returns the collections that do not exist or that the user can neither own
+    nor read (public). pymilvus is synchronous, so it runs in a thread to avoid
+    blocking the event loop.
+    """
+
+    def _check() -> list[str]:
+        client = get_milvus_client()
+        return [
+            c
+            for c in collection_ids
+            if not is_user_collection_accessible(client, c, user_id)
+        ]
+
+    return await asyncio.to_thread(_check)
+
+
+async def _chat_has_files(db: AsyncSession, chat_id: uuid.UUID) -> bool:
+    """True if any message of the chat references uploaded files (extra.files)."""
+    result = await db.execute(
+        select(
+            exists().where(Message.chat_id == chat_id, Message.extra.has_key("files"))
+        )
+    )
+    return bool(result.scalar())
+
+
+async def _find_conversation_collection(
+    user_id: uuid.UUID, chat_id: uuid.UUID
+) -> str | None:
+    """Collection of type `conversation` linked to the chat."""
+    return await asyncio.to_thread(
+        lambda: find_conversation_collection_id(get_milvus_client(), user_id, chat_id)
+    )
+
+
+# ==========================================
+# Routes
+# ==========================================
+
+
 @router.post("", response_model=ChatSummary, status_code=201)
 async def create_chat(
     payload: ChatCreate,
@@ -35,6 +124,45 @@ async def create_chat(
     await db.commit()
     await db.refresh(chat)
     return chat
+
+
+@router.delete("/{chat_id}", status_code=204)
+async def delete_chat(
+    chat_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    # The chat must exist and belong to the user
+    result = await db.execute(
+        select(Chat.id).where(Chat.id == chat_id, Chat.user_id == user_id)
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    # Drop the Milvus collections first. If this fails, the chat is kept
+    # and the client can retry (to avoid zombie collections)
+    try:
+        await asyncio.to_thread(
+            lambda: delete_conversation_collections(
+                get_milvus_client(), user_id, chat_id
+            )
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not delete the chat's documents. The chat was not deleted",
+        ) from exc
+
+    # Delete the chat
+    result = await db.execute(
+        delete(Chat).where(Chat.id == chat_id, Chat.user_id == user_id)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Chat not found")
+
+    await db.commit()
 
 
 @router.get("", response_model=list[ChatSummary])
@@ -66,57 +194,6 @@ async def get_chat(
     return chat
 
 
-def _sse_event(event: str, data: dict) -> str:
-    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def _to_llm_content(message: Message, include_images: bool) -> str | list[dict]:
-    """
-    Builds the `content` field for the LiteLLM payload from a saved Message.
-    If the message contains images and `include_images` is True, it returns
-    a list of OpenAI-style blocks (text + image_url). Otherwise, plain text .
-    """
-    images = message.images
-    if not images:
-        return message.content
-
-    if not include_images:
-        marker = f"[{len(images)} image(s) attached, not resent]"
-        return f"{message.content}\n{marker}" if message.content else marker
-
-    blocks = []
-    if message.content:
-        blocks.append({"type": "text", "text": message.content})
-    for img in images:
-        blocks.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"},
-            }
-        )
-    return blocks
-
-
-async def _find_inaccessible_collections(
-    collection_ids: list[str], user_id: uuid.UUID
-) -> list[str]:
-    """
-    Returns the collections that do not exist or that the user can neither own
-    nor read (public). pymilvus is synchronous, so it runs in a thread to avoid
-    blocking the event loop.
-    """
-
-    def _check() -> list[str]:
-        client = get_milvus_client()
-        return [
-            c
-            for c in collection_ids
-            if not is_user_collection_accessible(client, c, user_id)
-        ]
-
-    return await asyncio.to_thread(_check)
-
-
 @router.post("/{chat_id}/messages")
 async def send_message(
     chat_id: uuid.UUID,
@@ -144,10 +221,10 @@ async def send_message(
     # Milvus knowledge collections ids
     collection_ids = list(dict.fromkeys(payload.collection_ids or []))
 
-    if payload.agent_id and (payload.images or collection_ids):
+    if payload.agent_id and (payload.images or payload.files or collection_ids):
         raise HTTPException(
             status_code=400,
-            detail="Images and collections are not supported when sending to an agent",
+            detail="Images, files and collections are not supported when sending to an agent",
         )
 
     if payload.images or collection_ids:
@@ -187,16 +264,42 @@ async def send_message(
     if chat is None:
         raise HTTPException(status_code=404, detail="Chat not found")
 
+    if payload.model_id and (payload.files or await _chat_has_files(db, chat.id)):
+        conversation_collection = await _find_conversation_collection(user_id, chat.id)
+        if conversation_collection:
+            capabilities = await litellm_client.get_model_capabilities(payload.model_id)
+            if not capabilities.get("supports_function_calling"):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Model '{payload.model_id}' does not support tool calling, "
+                    "which is required to query the files of this chat",
+                )
+            collection_ids = list(
+                dict.fromkeys([*collection_ids, conversation_collection])
+            )
+        elif payload.files:
+            raise HTTPException(
+                status_code=400,
+                detail="This chat has no document collection to attach files to",
+            )
+
     # Save user message
     user_message = Message(
         chat_id=chat.id,
         role=MessageRole.user,
         content=payload.content,
-        extra=(
-            {"images": [img.model_dump() for img in payload.images]}
-            if payload.images
-            else {}
-        ),
+        extra={
+            **(
+                {"images": [img.model_dump() for img in payload.images]}
+                if payload.images
+                else {}
+            ),
+            **(
+                {"files": [f.model_dump() for f in payload.files]}
+                if payload.files
+                else {}
+            ),
+        },
     )
     db.add(user_message)
     await db.commit()
@@ -234,6 +337,9 @@ async def send_message(
         full_thinking = ""
         try:
             async for channel, delta in response_generator:
+                if channel == "heartbeat":
+                    yield ": ping\n\n"  # to keep the conection alive (avoid timeouts)
+                    continue
                 if channel == "status":
                     yield _sse_event("status", {"detail": delta})
                 elif channel == "thinking":
