@@ -331,11 +331,12 @@ class LiteLLMClient:
                                         if text:
                                             yield "content", text
 
-                            elif (
-                                result.get("kind") == "status-update"
-                                and result.get("final") is True
-                            ):
-                                break
+                            elif result.get("kind") == "status-update":
+                                if result.get("final") is True:
+                                    break
+                                # LiteLLM heartbeat: we forward it so the connection
+                                # to the browser never goes silent.
+                                yield "heartbeat", ""
 
                         except json.JSONDecodeError:
                             continue
