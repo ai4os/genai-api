@@ -42,6 +42,13 @@ class CollectionInfo(BaseModel):
     owner: str | None = None
 
 
+class DocumentListResponse(BaseModel):
+    items: list[str]
+    total: int
+    page: int
+    page_size: int
+
+
 class DocumentUploadResponse(BaseModel):
     filename: str
     collection_id: str

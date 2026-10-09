@@ -24,6 +24,7 @@ from genai_api.schemas.knowledge import (
     CollectionScope,
     CollectionType,
     DocumentDeleteResponse,
+    DocumentListResponse,
     DocumentUploadResponse,
 )
 
@@ -71,7 +72,7 @@ def parse_collection_info(
     """
     properties = desc.get("properties", {}) if desc else {}
     owner = properties.get("owner")
-    name = properties.get("name") or collection_name
+    name = properties.get("display_name") or properties.get("name") or collection_name
     description = properties.get("description")
     conversation_id = properties.get("conversation_id")
     type_str = properties.get("type")
@@ -418,13 +419,18 @@ async def create_collection(
     )
 
 
-@router.get("/collections/{collection_id}/documents", response_model=list[str])
+@router.get(
+    "/collections/{collection_id}/documents", response_model=DocumentListResponse
+)
 async def list_collection_documents(
     collection_id: str,
+    page: int = Query(1, ge=1, description="Page number (1-based)"),
+    page_size: int = Query(50, ge=1, le=200, description="Documents per page"),
     current_user: CurrentUser = Depends(get_current_user),
-) -> list[str]:
+) -> DocumentListResponse:
     """
-    List all document filenames within a particular collection.
+    List document filenames within a particular collection, paginated.
+    Filenames are returned sorted alphabetically so pages are stable.
     """
     client = get_milvus_client()
 
@@ -458,7 +464,15 @@ async def list_collection_documents(
                 if fname:
                     filenames.add(fname)
         iterator.close()
-        return sorted(list(filenames))
+
+        sorted_names = sorted(filenames)
+        start = (page - 1) * page_size
+        return DocumentListResponse(
+            items=sorted_names[start : start + page_size],
+            total=len(sorted_names),
+            page=page,
+            page_size=page_size,
+        )
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
