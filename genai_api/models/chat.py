@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -7,11 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from genai_api.db.base import Base
 
-from typing import TYPE_CHECKING
-
 if TYPE_CHECKING:
     from .message import Message
-    from .user import User
 
 
 class Chat(Base):
@@ -25,10 +23,10 @@ class Chat(Base):
     )
     title: Mapped[str | None] = mapped_column(String(255), default=None)
 
-    # Selected model
+    # Suggested model for the UI (not binding: each message records its own).
     model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
-    # TBD: reserved for mcp_servers, tools, db_connections, documents...
+    # Reserved for mcp_servers, tools, db_connections, documents...
     config: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
 
     created_at: Mapped[datetime] = mapped_column(
@@ -38,7 +36,6 @@ class Chat(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    user: Mapped["User"] = relationship(back_populates="chats")
     messages: Mapped[list["Message"]] = relationship(
         back_populates="chat",
         order_by="Message.created_at",

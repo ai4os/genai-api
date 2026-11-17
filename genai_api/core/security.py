@@ -1,6 +1,5 @@
 from functools import lru_cache
 
-from fastapi import HTTPException
 import jwt
 from jwt import PyJWKClient
 
@@ -24,16 +23,13 @@ def decode_token(token: str) -> dict:
     jwk_client = get_jwk_client()
     try:
         signing_key = jwk_client.get_signing_key_from_jwt(token)
-        payload = jwt.decode(
+        return jwt.decode(
             token,
             signing_key.key,
             algorithms=["RS256"],
             issuer=settings.keycloak_issuer,
-            options={"verify_aud": False},
+            audience=settings.keycloak_audience,
+            options={"require": ["exp", "iss", "aud", "sub"]},
         )
-    except Exception as e:
-        print(f"!!! JWT ERROR: {type(e).__name__} - {str(e)}")
-        raise HTTPException(status_code=401, detail="Invalid token")
     except jwt.PyJWTError as exc:
         raise TokenValidationError(str(exc)) from exc
-    return payload

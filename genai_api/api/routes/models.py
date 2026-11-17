@@ -23,6 +23,12 @@ async def list_available_models(
 ):
     """
     Models available in LiteLLM (using the user's API key).
+
+    Permissions come from the user's key (/v1/models). That list can contain
+    stale names (e.g. access groups keep the names of models that have since
+    been deleted), so we intersect it with the models that currently exist
+    in LiteLLM (/model/info, fetched with the service key). The service key
+    is only used to discard non-existent names: it never grants access.
     """
     user_models = await litellm.list_models()
     all_model_info = await litellm.get_model_info()
@@ -31,33 +37,37 @@ async def list_available_models(
     info_by_model = {m["model_name"]: m.get("model_info") or {} for m in all_model_info}
     status_by_model = {s["model_name"]: s["status"] for s in status.values()}
 
-    # Remove manually models that include 'embedding'
-    # and 'all-proxy-models' model from list
+    # Models that currently exist in LiteLLM (source of truth for existence)
+    existing_ids = set(info_by_model)
+
+    # Keep only models the user can use AND that still exist.
+    # Also remove manually models that include 'embedding',
+    # 'default-' and 'all-proxy-models' model from list
     visible_ids = [
         m["id"]
         for m in user_models
-        if m["id"] not in EXCLUDED_IDS
+        if m["id"] in existing_ids
+        and m["id"] not in EXCLUDED_IDS
         and not any(sub in m["id"].lower() for sub in EXCLUDED_SUBSTRINGS)
     ]
 
-    return [
-        ModelInfo(
-            id=model_id,
-            status=status_by_model.get(model_id, "unknown"),
-            max_input_tokens=info_by_model.get(model_id, {}).get("max_input_tokens"),
-            supports_vision=info_by_model.get(model_id, {}).get("supports_vision"),
-            supports_reasoning=info_by_model.get(model_id, {}).get(
-                "supports_reasoning"
-            ),
-            supports_function_calling=info_by_model.get(model_id, {}).get(
-                "supports_function_calling"
-            ),
-            input_cost_per_million=_cost_per_million(
-                info_by_model.get(model_id, {}).get("input_cost_per_token")
-            ),
-            output_cost_per_million=_cost_per_million(
-                info_by_model.get(model_id, {}).get("output_cost_per_token")
-            ),
+    result = []
+    for model_id in visible_ids:
+        info = info_by_model.get(model_id, {})
+        result.append(
+            ModelInfo(
+                id=model_id,
+                status=status_by_model.get(model_id, "unknown"),
+                max_input_tokens=info.get("max_input_tokens"),
+                supports_vision=info.get("supports_vision"),
+                supports_reasoning=info.get("supports_reasoning"),
+                supports_function_calling=info.get("supports_function_calling"),
+                input_cost_per_million=_cost_per_million(
+                    info.get("input_cost_per_token")
+                ),
+                output_cost_per_million=_cost_per_million(
+                    info.get("output_cost_per_token")
+                ),
+            )
         )
-        for model_id in visible_ids
-    ]
+    return result
