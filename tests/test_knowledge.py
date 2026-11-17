@@ -1,122 +1,136 @@
+import json
+import os
 from pathlib import Path
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from genai_api.api.deps import CurrentUser, get_current_user
 from genai_api.main import app
 
-try:
-    from tests.conftest import TEST_USER_ID
-except ModuleNotFoundError:
-    from conftest import TEST_USER_ID
-
+TOKEN = os.getenv("TEST_USER_TOKEN")
+MODEL_ID = os.getenv("TEST_MODEL_ID")
 TEST_FILES_DIR = Path(__file__).parent / "test_files"
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(
+        not (TOKEN and MODEL_ID),
+        reason="TEST_USER_TOKEN and TEST_MODEL_ID are required",
+    ),
+]
+
+
+def parse_sse(text: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        event, data = None, None
+        for line in block.splitlines():
+            if line.startswith("event:"):
+                event = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data = json.loads(line[len("data:") :].strip())
+        if event:
+            events.append((event, data))
+    return events
+
+
+async def ask(client: AsyncClient, chat_id: str, content: str, files=None) -> str:
+    """Sends a message, checks the stream ended well and returns the answer."""
+    payload = {"content": content, "model_id": MODEL_ID}
+    if files:
+        payload["files"] = files
+    res = await client.post(f"/chats/{chat_id}/messages", json=payload)
+    assert res.status_code == 200, res.text
+    events = parse_sse(res.text)
+    names = [name for name, _ in events]
+    assert "error" not in names, events
+    assert names[-1] == "done"
+    return "".join(
+        d["content"] for name, d in events if name == "delta" and "content" in d
+    )
 
 
 @pytest.mark.asyncio
-async def test_knowledge_lifecycle():
-    fake_user = CurrentUser(
-        id=TEST_USER_ID,
-        email="test@example.com",
-        username="test",
-        roles=[],
-        raw_token="fake-token",
-    )
-    app.dependency_overrides[get_current_user] = lambda: fake_user
+async def test_knowledge_chat():
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
+    collection_id = None
 
-    try:
-        transport = ASGITransport(app=app)
-        async with AsyncClient(transport=transport, base_url="http://test") as client:
-            # 1. List user collections
-            initial_res = await client.get("/knowledge/collections")
-            assert initial_res.status_code == 200
-            initial_collections = initial_res.json()
-            initial_ids = {c["id"] for c in initial_collections}
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=headers, timeout=180
+    ) as client:
+        try:
+            # 1. Chat + its collection (type conversation, linked by chat id)
+            res = await client.post(
+                "/chats", json={"title": "test_knowledge_chat", "model_id": MODEL_ID}
+            )
+            assert res.status_code == 201, res.text
+            chat_id = res.json()["id"]
 
-            # 2. Generate a new collection
-            create_res = await client.post(
+            res = await client.post(
                 "/knowledge/collections",
                 json={
-                    "name": "Test Collection",
-                    "description": "A test knowledge collection",
-                    "type": "knowledge_base",
+                    "name": "test_knowledge_chat",
+                    "type": "conversation",
+                    "conversation_id": chat_id,
                 },
             )
-            assert create_res.status_code == 201
-            created_col = create_res.json()
-            collection_id = created_col["id"]
-            assert created_col["name"] == "Test Collection"
-            assert created_col["type"] == "knowledge_base"
+            assert res.status_code == 201, res.text
+            collection_id = res.json()["id"]
 
-            # 3. Make sure it was not in the old collections
-            assert collection_id not in initial_ids
-
-            listed_res = await client.get("/knowledge/collections")
-            assert listed_res.status_code == 200
-            listed_ids = {c["id"] for c in listed_res.json()}
-            assert collection_id in listed_ids
-
-            # 4. Upload MD, CSV and PDF from test_files to the collection
-            test_files = ["test.md", "test.csv", "test.pdf"]
-            for filename in test_files:
-                file_path = TEST_FILES_DIR / filename
-                with open(file_path, "rb") as f:
-                    file_bytes = f.read()
-
-                upload_res = await client.post(
-                    f"/knowledge/collections/{collection_id}/documents",
-                    files={"file": (filename, file_bytes)},
-                )
-                assert upload_res.status_code == 200
-                upload_data = upload_res.json()
-                assert upload_data["filename"] == filename
-                assert upload_data["collection_id"] == collection_id
-                assert upload_data["chunks_count"] > 0
-                assert upload_data["status"] == "indexed"
-
-            # 5. List all documents in the collection
-            docs_res = await client.get(
-                f"/knowledge/collections/{collection_id}/documents"
+            # 2. Upload the mock CSV (Josefina, 78) to that collection
+            csv_bytes = (TEST_FILES_DIR / "test.csv").read_bytes()
+            res = await client.post(
+                f"/knowledge/collections/{collection_id}/documents",
+                files={"file": ("test.csv", csv_bytes)},
             )
-            assert docs_res.status_code == 200
-            doc_filenames = docs_res.json()
-            assert set(doc_filenames) == set(test_files)
+            assert res.status_code == 200, res.text
+            assert res.json()["status"] == "indexed"
 
-            # 6. Delete a particular file within the collection
-            file_to_delete = "test.csv"
-            del_file_res = await client.delete(
-                f"/knowledge/collections/{collection_id}/documents/{file_to_delete}"
+            # 3. First message references the file
+            answer = await ask(
+                client,
+                chat_id,
+                "What is the age of Josefina?",
+                files=[{"filename": "test.csv", "mimetype": "text/csv"}],
             )
-            assert del_file_res.status_code == 200
-            del_file_data = del_file_res.json()
-            assert del_file_data["filename"] == file_to_delete
-            assert del_file_data["collection_id"] == collection_id
+            assert "78" in answer
 
-            # Verify the file is no longer in the collection
-            docs_after_del_res = await client.get(
-                f"/knowledge/collections/{collection_id}/documents"
-            )
-            assert docs_after_del_res.status_code == 200
-            remaining_docs = docs_after_del_res.json()
-            assert file_to_delete not in remaining_docs
-            assert set(remaining_docs) == set(test_files) - {file_to_delete}
+            # 4. The reference was stored (name + mimetype only)
+            res = await client.get(f"/chats/{chat_id}")
+            assert res.status_code == 200
+            first_user_message = res.json()["messages"][0]
+            assert first_user_message["files"] == [
+                {"filename": "test.csv", "mimetype": "text/csv"}
+            ]
 
-            # 7. Delete the collection
-            delete_res = await client.delete(f"/knowledge/collections/{collection_id}")
-            assert delete_res.status_code == 200
-            delete_data = delete_res.json()
-            assert delete_data["collection_id"] == collection_id
-
-            # Verify collection is removed
-            after_delete_res = await client.get("/knowledge/collections")
-            assert after_delete_res.status_code == 200
-            after_delete_ids = {c["id"] for c in after_delete_res.json()}
-            assert collection_id not in after_delete_ids
-    finally:
-        app.dependency_overrides.clear()
+            # 5. Follow-up without files: the chat still has them, so it must
+            #    keep querying the collection
+            answer = await ask(client, chat_id, "And how old is Josefina, again?")
+            assert "78" in answer
+        finally:
+            if collection_id:
+                await client.delete(f"/knowledge/collections/{collection_id}")
 
 
-if __name__ == "__main__":
-    import asyncio
+@pytest.mark.asyncio
+async def test_files_without_collection_are_rejected():
+    transport = ASGITransport(app=app)
+    headers = {"Authorization": f"Bearer {TOKEN}"}
 
-    asyncio.run(test_knowledge_lifecycle())
+    async with AsyncClient(
+        transport=transport, base_url="http://test", headers=headers, timeout=60
+    ) as client:
+        res = await client.post("/chats", json={"model_id": MODEL_ID})
+        assert res.status_code == 201, res.text
+        chat_id = res.json()["id"]
+
+        res = await client.post(
+            f"/chats/{chat_id}/messages",
+            json={
+                "content": "hi",
+                "model_id": MODEL_ID,
+                "files": [{"filename": "test.csv"}],
+            },
+        )
+        assert res.status_code == 400

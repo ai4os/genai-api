@@ -3,18 +3,13 @@ from datetime import datetime
 
 from sqlalchemy import DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from genai_api.db.base import Base
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .chat import Chat
-
 
 class User(Base):
-    """User authenticated in Keycloak. id == 'sub' in the token."""
+    """User authenticated in Keycloak. id == 'sub' claim of the token."""
 
     __tablename__ = "users"
 
@@ -24,6 +19,5 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Cached LiteLLM key of the user (obtained through PAPI). Never sent to the client.
     litellm_api_key: Mapped[str | None] = mapped_column(default=None)
-
-    chats: Mapped[list["Chat"]] = relationship(back_populates="user")
