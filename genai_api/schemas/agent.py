@@ -16,3 +16,7 @@ class AgentInfo(BaseModel):
     url: str
     provider: str
     skills: List[SkillInfo]
+    input_cost_per_million: float | None
+    output_cost_per_million: float | None
+    dev_status: str | None
+    suggestions: List[str] = []

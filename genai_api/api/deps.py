@@ -1,7 +1,21 @@
+"""
+FastAPI dependencies: authentication, current user and per-user LiteLLM client.
+
+Dependency chain (FastAPI resolves it per request, and every dependency that
+asks for `get_db` receives the SAME session within that request):
+
+    bearer token ──► get_current_user ──► get_current_user_id
+                          │
+                          └──► get_user_litellm_client
+"""
+
 import uuid
+from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from genai_api.core.security import TokenValidationError, decode_token
@@ -13,22 +27,15 @@ from genai_api.services.papi_client import PAPIClient
 bearer_scheme = HTTPBearer()
 
 
+@dataclass(frozen=True)
 class CurrentUser:
-    def __init__(
-        self,
-        id: uuid.UUID,
-        email: str | None,
-        username: str | None,
-        roles: list[str],
-        raw_token: str,
-    ):
-        self.id = id
-        self.email = email
-        self.username = username
-        self.roles = roles
-        # Stored only to forward it to downstream services (PAPI)
-        # within the same request. It is not persisted anywhere.
-        self.raw_token = raw_token
+    id: uuid.UUID
+    email: str | None
+    username: str | None
+    roles: list[str]
+    # Stored only to forward it to downstream services (PAPI)
+    # within the same request. It is not persisted anywhere.
+    raw_token: str
 
 
 async def get_current_user(
@@ -49,15 +56,18 @@ async def get_current_user(
     username = payload.get("preferred_username")
     roles = payload.get("realm_access", {}).get("roles", [])
 
-    user = await db.get(User, user_id)
-    if user is None:
-        user = User(id=user_id, email=email, username=username)
-        db.add(user)
-        await db.commit()
-    elif user.email != email or user.username != username:
-        user.email = email
-        user.username = username
-        await db.commit()
+    # One atomic statement: creates the user, or updates email/username only if
+    # they changed. Being atomic, it also avoids the race where parallel requests
+    # of a brand-new user (/chats, /agents, /models fired together by the frontend).
+    stmt = pg_insert(User).values(id=user_id, email=email, username=username)
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["id"],
+        set_={"email": email, "username": username},
+        where=User.email.is_distinct_from(email)
+        | User.username.is_distinct_from(username),
+    )
+    await db.execute(stmt)
+    await db.commit()
 
     return CurrentUser(
         id=user_id,
@@ -75,8 +85,8 @@ async def get_current_user_id(
 
 
 def require_role(role: str):
-    """Dependency factory for protecting endpoints based on Keycloak roles.
-    TODO: not used yet. Example of use: Depends(require_role("admin"))."""
+    """Dependency factory to protect endpoints by Keycloak realm role.
+    TODO: Not used yet. Example: Depends(require_role("admin"))."""
 
     async def checker(
         current_user: CurrentUser = Depends(get_current_user),
@@ -95,18 +105,34 @@ async def get_user_litellm_client(
     db: AsyncSession = Depends(get_db),
 ) -> LiteLLMClient:
     """
-    Devuelve un LiteLLMClient con la API key propia del usuario actual.
-    Returns a LiteLLMClient configured with the current user's API key.
+    LiteLLMClient configured with the user's own LiteLLM key.
 
-    If the user does not yet have a cached key in `users.litellm_api_key`,
-    it is created via PAPI using the user's own token, then stored so future
-    requests do not need to call PAPI again.
+    The key is created through PAPI (with the user's token) the first time it is
+    needed, and cached in `users.litellm_api_key`.
+
+    Concurrency: for a brand-new user the frontend fires several requests in
+    parallel and all of them would see "no key yet". Only in that case we lock
+    the user's row (`SELECT ... FOR UPDATE`), so the first request creates the key
+    and the rest wait, then find it already stored. Users that already have a key
+    never take the lock, so their parallel requests do not queue.
     """
     user = await db.get(User, current_user.id)
 
     if user.litellm_api_key is None:
-        papi_client = PAPIClient(token=current_user.raw_token)
-        user.litellm_api_key = await papi_client.create_genai_key()
-        await db.commit()
+        user = (
+            await db.execute(
+                select(User)
+                .where(User.id == current_user.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)  # refresh after waiting
+            )
+        ).scalar_one()
+        if user.litellm_api_key is None:  # re-check now that we hold the lock
+            user.litellm_api_key = await PAPIClient(
+                token=current_user.raw_token
+            ).create_genai_key()
+        await db.commit()  # also releases the lock
 
-    return LiteLLMClient(api_key=user.litellm_api_key)
+    return LiteLLMClient(
+        api_key=user.litellm_api_key, user_token=current_user.raw_token
+    )
