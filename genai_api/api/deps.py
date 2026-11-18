@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from genai_api.core.security import TokenValidationError, decode_token
-from genai_api.db.session import get_db
+from genai_api.db.session import async_session, get_db
 from genai_api.models.user import User
 from genai_api.services.litellm_client import LiteLLMClient
 from genai_api.services.papi_client import PAPIClient
@@ -100,6 +100,25 @@ def require_role(role: str):
     return checker
 
 
+async def refresh_user_litellm_key(
+    user_id: uuid.UUID, raw_token: str, failed_key: str
+) -> str:
+    """
+    Regenerates the user's LiteLLM key after LiteLLM rejected `failed_key`.
+    """
+    async with async_session() as session:
+        user = (
+            await session.execute(
+                select(User).where(User.id == user_id).with_for_update()
+            )
+        ).scalar_one()
+        if user.litellm_api_key == failed_key:
+            user.litellm_api_key = await PAPIClient(token=raw_token).create_genai_key()
+        new_key = user.litellm_api_key
+        await session.commit()
+    return new_key
+
+
 async def get_user_litellm_client(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -115,6 +134,10 @@ async def get_user_litellm_client(
     the user's row (`SELECT ... FOR UPDATE`), so the first request creates the key
     and the rest wait, then find it already stored. Users that already have a key
     never take the lock, so their parallel requests do not queue.
+
+    Safety net: if LiteLLM later says it does not know the cached key
+    (`token_not_found_in_db`), the client calls `refresh_user_litellm_key`
+    and retries once.
     """
     user = await db.get(User, current_user.id)
 
@@ -133,6 +156,13 @@ async def get_user_litellm_client(
             ).create_genai_key()
         await db.commit()  # also releases the lock
 
+    async def on_invalid_key(failed_key: str) -> str:
+        return await refresh_user_litellm_key(
+            current_user.id, current_user.raw_token, failed_key
+        )
+
     return LiteLLMClient(
-        api_key=user.litellm_api_key, user_token=current_user.raw_token
+        api_key=user.litellm_api_key,
+        user_token=current_user.raw_token,
+        on_invalid_key=on_invalid_key,
     )

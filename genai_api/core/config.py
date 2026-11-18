@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     litellm_base_url: str
     litellm_api_key: str
     papi_base_url: str
+    genai_key_name: str
     cors_origins: list[str] = [
         "https://genai.cloud.ai4eosc.eu",
         "https://genai.dev.ai4eosc.eu",
