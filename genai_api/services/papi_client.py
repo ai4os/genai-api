@@ -11,8 +11,6 @@ from genai_api.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-GENAI_KEY_NAME = "genai_app"
-
 
 class PAPIClient:
     def __init__(self, token: str):
@@ -36,8 +34,8 @@ class PAPIClient:
         Creates a fresh LiteLLM API key for the GenAI environment.
 
         The method first checks whether an API key with the configured
-        ``GENAI_KEY_NAME`` already exists in PAPI. If it does, the key is deleted
-        before creating a new one.
+        ``settings.genai_key_name`` already exists in PAPI. If it does,
+        the key is deleted before creating a new one.
 
         This guarantees that the key stored in PAPI and the one persisted in the
         GenAI database are always synchronized. An existing key may indicate that
@@ -47,31 +45,28 @@ class PAPIClient:
         Returns:
             The newly created API key token.
         """
+        key_name = settings.genai_key_name
         try:
             response = await self._request("GET", "/v1/llm/api_keys")
 
             for key in response.json():
-                if key.get("id") == GENAI_KEY_NAME:
+                if key.get("id") == key_name:
                     logger.warning(
-                        "A '%s' key already existed in PAPI but not in our database; "
-                        "replacing it",
-                        GENAI_KEY_NAME,
+                        "A '%s' key already existed in PAPI; replacing it", key_name
                     )
                     await self._request(
                         "DELETE",
                         "/v1/llm/api_keys",
-                        params={"key_name": GENAI_KEY_NAME},
+                        params={"key_name": key_name},
                     )
                     break
 
             create_response = await self._request(
-                "POST", "/v1/llm/api_keys", params={"key_name": GENAI_KEY_NAME}
+                "POST", "/v1/llm/api_keys", params={"key_name": key_name}
             )
             # Log only the status: the body is the secret key itself.
             logger.info(
-                "Created '%s' key in PAPI (%s)",
-                GENAI_KEY_NAME,
-                create_response.status_code,
+                "Created '%s' key in PAPI (%s)", key_name, create_response.status_code
             )
             return create_response.json()
         except httpx.TimeoutException as exc:
