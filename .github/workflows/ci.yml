@@ -33,6 +33,7 @@ jobs:
       LITELLM_BASE_URL: https://example.com
       LITELLM_API_KEY: test-key
       PAPI_BASE_URL: https://example.com
+      GENAI_KEY_NAME: genai_app_test
       PYTHONPATH: .
 
     steps:
