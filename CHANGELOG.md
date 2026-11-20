@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/ai4os/genai-api/compare/v1.0.0...v1.0.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* add GENAI_KEY_NAME support (dev/prod) and implement key regeneration logic in LiteLLMClient ([fb617d2](https://github.com/ai4os/genai-api/commit/fb617d2d5cb4f82172be81b7e9806eac86ed9144))
+
 ## 1.0.0 (2026-11-17)
 
 
