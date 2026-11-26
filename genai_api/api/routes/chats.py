@@ -60,6 +60,16 @@ async def delete_chat(
     await chat_service.delete_chat(db, chat_id, user_id)
 
 
+@router.delete("", status_code=204)
+async def delete_chats(
+    user_id: uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(Chat).where(Chat.user_id == user_id))
+    for chat in result.scalars().all():
+        await chat_service.delete_chat(db, chat.id, user_id)
+
+
 @router.post("/{chat_id}/messages")
 async def send_message(
     chat_id: uuid.UUID,
