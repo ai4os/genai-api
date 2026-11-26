@@ -121,11 +121,7 @@ def collection_info(name: str, props: dict[str, Any]) -> CollectionInfo:
 def list_user_collections(
     client: MilvusClient, user_id: uuid.UUID, scope: CollectionScope
 ) -> list[CollectionInfo]:
-    """Public and/or private collections visible to the user.
-
-    Still one `list_collections` call plus a (cached) `describe_collection` per
-    collection of the whole Milvus. If it grows a lot, store ownership in Postgres.
-    """
+    """Public and/or private collections visible to the user."""
     results: list[CollectionInfo] = []
     for name in client.list_collections():
         props = _describe(client, name)

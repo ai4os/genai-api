@@ -66,8 +66,12 @@ def list_collections(
 ):
     """Public, private or all collections visible to the user."""
     try:
-        return milvus.list_user_collections(
+        collections = milvus.list_user_collections(
             milvus.get_milvus_client(), current_user.id, scope
+        )
+        return sorted(
+            collections,
+            key=lambda collection: (collection.name.casefold(), collection.id),
         )
     except HTTPException:
         raise
