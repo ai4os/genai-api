@@ -14,6 +14,7 @@ authentication problem of the browser's Keycloak token.
 
 import json
 import logging
+from typing import Any
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
@@ -479,3 +480,38 @@ class LiteLLMClient:
                     status_code=502,
                     detail="Connection error while talking to the agent",
                 ) from exc
+
+    ######## USER ########
+    async def get_user_info(self, user_id: str) -> dict[str, Any]:
+        """
+        Retrieves information about a LiteLLM user. Uses the
+        service API key to access the administrative endpoint.
+        """
+        response = await self._request(
+            "GET",
+            "/user/info",
+            api_key=settings.litellm_api_key,
+            params={"user_id": user_id},
+        )
+        return response.json()
+
+    async def get_team_info(self, team_id: str) -> dict:
+        """
+        Retrieves information about a LiteLLM team. Uses the
+        service API key to access the administrative endpoint.
+
+        Returns:
+            Team information, including:
+                - team_info.team_member_budget_table:
+                Default budget assigned to team members.
+                - team_memberships:
+                Individual team member information and spend.
+        """
+        response = await self._request(
+            "GET",
+            "/team/info",
+            api_key=settings.litellm_api_key,
+            params={"team_id": team_id},
+        )
+
+        return response.json()
