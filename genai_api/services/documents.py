@@ -9,6 +9,7 @@ import re
 import anydoc
 from fastapi import HTTPException, status
 from openai import OpenAI
+from genai_api.extractors import oscar, local
 
 from genai_api.core.config import (
     CHUNK_OVERLAP,
@@ -29,8 +30,10 @@ def get_openai_client(api_key: str | None = None) -> OpenAI:
 def convert_to_markdown(content: bytes, filename: str) -> str:
     """Converts a document to markdown with anydoc (fallback: plain UTF-8)."""
     try:
-        doc_format = anydoc.format_from_path(filename)
-        return anydoc.to_markdown_bytes(content, format=doc_format)
+        if settings.extractor == "oscar":
+            return oscar.oscar_document_extractor(content, filename)
+        else:
+            return local.local_document_extractor(content, filename)
     except Exception as exc:
         try:
             return content.decode("utf-8")

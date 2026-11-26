@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     milvus_user: str = "root"
     milvus_pwd: str = ""
 
+    extractor: str = "local"
+    oscar_endpoint: str = ""
+    oscar_access_token: str = ""
+    oscar_doc_extractor_service_name: str = ""
+    oscar_timeout_seconds: int = 30
+    oscar_poll_seconds: int = 2
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @field_validator("cors_origins")
