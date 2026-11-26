@@ -7,6 +7,7 @@ from genai_api.api.routes.agents import router as agents_router
 from genai_api.api.routes.chats import router as chats_router
 from genai_api.api.routes.knowledge import router as knowledge_router
 from genai_api.api.routes.models import router as models_router
+from genai_api.api.routes.user import router as user_router
 from genai_api.core.config import settings
 
 # Configure logger
@@ -26,6 +27,7 @@ app.include_router(chats_router)
 app.include_router(models_router)
 app.include_router(agents_router)
 app.include_router(knowledge_router)
+app.include_router(user_router)
 
 
 @app.get("/health")
