@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/ai4os/genai-api/compare/v1.0.1...v1.1.0) (2026-11-26)
+
+
+### Features
+
+* add credit usage endpoint ([a97830a](https://github.com/ai4os/genai-api/commit/a97830a40f012c12cbe8de5cedf65ab1ee4ba8bd))
+* add delete all chats endpoint ([58aa088](https://github.com/ai4os/genai-api/commit/58aa088c81f5f2bd7389eb4987ca04f4e153102c))
+
 ## [1.0.1](https://github.com/ai4os/genai-api/compare/v1.0.0...v1.0.1) (2026-11-20)
 
 
