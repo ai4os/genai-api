@@ -230,7 +230,7 @@ def await_oscar_job_completion(
             else:
                 unknown_status_tolerance_checks += 1
 
-        if unknown_status_tolerance_checks > 2:
+        if unknown_status_tolerance_checks > 4:
             raise RuntimeError(
                 "[OSCAR] unknown job status threshold exceeded. Job may not have been created or is not being tracked."
             )
